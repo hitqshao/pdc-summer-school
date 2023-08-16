@@ -149,6 +149,9 @@ Storm read_storm_file( char *fname ) {
  * MAIN PROGRAM
  */
 int main(int argc, char *argv[]) {
+    int threadNum = omp_get_thread_num();
+    printf("Running %d threads.\n",threadNum);
+	
     int i,j,k;
 
     /* 1.1. Read arguments */
@@ -187,7 +190,7 @@ int main(int argc, char *argv[]) {
     }
     for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
-    
+
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
 
@@ -200,9 +203,28 @@ int main(int argc, char *argv[]) {
             int position = storms[i].posval[j*2];
 
             /* For each cell in the layer */
-            for( k=0; k<layer_size; k++ ) {
+            //for( k=0; k<layer_size; k++ ) {
+            //    update( layer, layer_size, k, position, energy );
+            //}
+	    #pragma omp parallel for shared(layer, layer_size, position, energy)
+            for( k=0; k<layer_size/16; k++ ) {
                 /* Update the energy value for the cell */
-                update( layer, layer_size, k, position, energy );
+                update( layer, layer_size, k*16, position, energy );
+                update( layer, layer_size, k*16+1, position, energy );
+                update( layer, layer_size, k*16+2, position, energy );
+                update( layer, layer_size, k*16+3, position, energy );
+                update( layer, layer_size, k*16+4, position, energy );
+                update( layer, layer_size, k*16+5, position, energy );
+                update( layer, layer_size, k*16+6, position, energy );
+                update( layer, layer_size, k*16+7, position, energy );
+                update( layer, layer_size, k*16+8, position, energy );
+                update( layer, layer_size, k*16+9, position, energy );
+                update( layer, layer_size, k*16+10, position, energy );
+                update( layer, layer_size, k*16+11, position, energy );
+                update( layer, layer_size, k*16+12, position, energy );
+                update( layer, layer_size, k*16+13, position, energy );
+                update( layer, layer_size, k*16+14, position, energy );
+                update( layer, layer_size, k*16+15, position, energy );
             }
         }
 
