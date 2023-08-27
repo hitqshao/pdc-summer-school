@@ -1,4 +1,3 @@
-%%writefile energy_storms_cuda_opt.cu
 /*
  * Simplified simulation of high-energy particle storms
  *
@@ -24,22 +23,22 @@
 #include<limits.h>
 #include<sys/time.h>
 
-/* Headers for the CUDA assignment versions */
-#include<cuda.h>
+/* Headers for the HIP assignment versions */
+#include<hip/hip_runtime.h>
 
 /*
- * Macros to show errors when calling a CUDA library function,
+ * Macros to show errors when calling a HIP library function,
  * or after launching a kernel
  */
-#define CHECK_CUDA_CALL( a )	{ \
-	cudaError_t ok = a; \
-	if ( ok != cudaSuccess ) \
-		fprintf(stderr, "-- Error CUDA call in line %d: %s\n", __LINE__, cudaGetErrorString( ok ) ); \
+#define CHECK_HIP_CALL( a )	{ \
+	hipError_t ok = a; \
+	if ( ok != hipSuccess ) \
+		fprintf(stderr, "-- Error HIP call in line %d: %s\n", __LINE__, hipGetErrorString( ok ) ); \
 	}
-#define CHECK_CUDA_LAST()	{ \
-	cudaError_t ok = cudaGetLastError(); \
-	if ( ok != cudaSuccess ) \
-		fprintf(stderr, "-- Error CUDA last in line %d: %s\n", __LINE__, cudaGetErrorString( ok ) ); \
+#define CHECK_HIP_LAST()	{ \
+	hipError_t ok = hipGetLastError(); \
+	if ( ok != hipSuccess ) \
+		fprintf(stderr, "-- Error HIP last in line %d: %s\n", __LINE__, hipGetErrorString( ok ) ); \
 	}
 
 
@@ -69,7 +68,7 @@ typedef struct {
 
 /* THIS FUNCTION CAN BE MODIFIED */
 /* Function to update a single position of the layer */
-__device__ void update( float *layer, int layer_size, int k, int pos, float energy ) {
+void update( float *layer, int layer_size, int k, int pos, float energy ) {
     /* 1. Compute the absolute value of the distance between the
         impact position and the k-th position of the layer */
     int distance = pos - k;
@@ -91,7 +90,6 @@ __device__ void update( float *layer, int layer_size, int k, int pos, float ener
         layer[k] = layer[k] + energy_k;
 }
 
-
 __global__ void calcStorms(Storm* stormPtr, float *layerDevice, int layer_size) {
     const int threadId = blockIdx.x*blockDim.x + threadIdx.x;
 
@@ -109,8 +107,6 @@ __global__ void calcStorms(Storm* stormPtr, float *layerDevice, int layer_size) 
         update( layerDevice, layer_size, k, position, energy );
     }
 }
-
-
 /* ANCILLARY FUNCTIONS: These are not called from the code section which is measured, leave untouched */
 /* DEBUG function: Prints the layer status */
 void debug_print(int layer_size, float *layer, int *positions, float *maximum, int num_storms ) {
@@ -212,8 +208,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* 2. Begin time measurement */
-	CHECK_CUDA_CALL( cudaSetDevice(0) );
-	CHECK_CUDA_CALL( cudaDeviceSynchronize() );
+	CHECK_HIP_CALL( hipSetDevice(0) );
+	CHECK_HIP_CALL( hipDeviceSynchronize() );
     double ttotal = cp_Wtime();
 
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
@@ -227,28 +223,25 @@ int main(int argc, char *argv[]) {
     }
     for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
-
-
-
     float *layerDevice;
 
     // init layer
-    cudaMalloc((void **)&layerDevice, sizeof(float) * layer_size );
-    cudaMemcpy(layerDevice, layer, sizeof(float) * layer_size, cudaMemcpyHostToDevice);
-
-    // result
-
+    hipMalloc((void **)&layerDevice, sizeof(float) * layer_size );
+    hipMemcpy(layerDevice, layer, sizeof(float) * layer_size, hipMemcpyHostToDevice);
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
+
         // allocate memory in gpu
         Storm *stormsDevice;
-        cudaMalloc((void **)&stormsDevice, storms[i].size * sizeof(Storm));
-        cudaMemcpy(stormsDevice, storms, storms[i].size * sizeof(Storm), cudaMemcpyHostToDevice);
+        hipMalloc((void **)&stormsDevice, storms[i].size * sizeof(Storm));
+        hipMemcpy(stormsDevice, storms, storms[i].size * sizeof(Storm), hipMemcpyHostToDevice);
 
         // Parallel by GPU
-        calcStorms<<<32, storms[i].size/32>>> (stormsDevice,layerDevice, layer_size);
+        hipLaunchKernelGGL(calcStorms, 32, storms[i].size/32, 
+        0, 0,
+        stormsDevice,layerDevice, layer_size);
 
-        cudaMemcpy(layer, layerDevice, sizeof(float) * layer_size, cudaMemcpyDeviceToHost);
+        hipMemcpy(layer, layerDevice, sizeof(float) * layer_size, hipMemcpyDeviceToHost);
 
         ///* 4.1. Add impacts energies to layer cells */
         ///* For each particle */
@@ -265,12 +258,11 @@ int main(int argc, char *argv[]) {
         //    }
         //}
 
-        // Process by CPU
-
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
         for( k=0; k<layer_size; k++ ) 
             layer_copy[k] = layer[k];
+
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
         for( k=1; k<layer_size-1; k++ )
@@ -291,7 +283,7 @@ int main(int argc, char *argv[]) {
     /* END: Do NOT optimize/parallelize the code below this point */
 
     /* 5. End time measurement */
-	  CHECK_CUDA_CALL( cudaDeviceSynchronize() );
+	CHECK_HIP_CALL( hipDeviceSynchronize() );
     ttotal = cp_Wtime() - ttotal;
 
     /* 6. DEBUG: Plot the result (only for layers up to 35 points) */
@@ -316,3 +308,4 @@ int main(int argc, char *argv[]) {
     /* 9. Program ended successfully */
     return 0;
 }
+
