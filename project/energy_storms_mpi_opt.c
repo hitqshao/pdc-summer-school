@@ -18,29 +18,11 @@
  */
 #include<stdio.h>
 #include<stdlib.h>
-#include<string.h>
 #include<math.h>
-#include<limits.h>
 #include<sys/time.h>
 
-/* Headers for the CUDA assignment versions */
-#include<cuda.h>
-
-/*
- * Macros to show errors when calling a CUDA library function,
- * or after launching a kernel
- */
-#define CHECK_CUDA_CALL( a )	{ \
-	cudaError_t ok = a; \
-	if ( ok != cudaSuccess ) \
-		fprintf(stderr, "-- Error CUDA call in line %d: %s\n", __LINE__, cudaGetErrorString( ok ) ); \
-	}
-#define CHECK_CUDA_LAST()	{ \
-	cudaError_t ok = cudaGetLastError(); \
-	if ( ok != cudaSuccess ) \
-		fprintf(stderr, "-- Error CUDA last in line %d: %s\n", __LINE__, cudaGetErrorString( ok ) ); \
-	}
-
+/* Headers for the MPI assignment versions */
+#include<mpi.h>
 
 /* Use fopen function in local tests. The Tablon online judge software 
    substitutes it by a different function to run in its sandbox */
@@ -68,7 +50,7 @@ typedef struct {
 
 /* THIS FUNCTION CAN BE MODIFIED */
 /* Function to update a single position of the layer */
-__device__ update( float *layer, int layer_size, int k, int pos, float energy ) {
+void update( float *layer, int layer_size, int k, int pos, float energy ) {
     /* 1. Compute the absolute value of the distance between the
         impact position and the k-th position of the layer */
     int distance = pos - k;
@@ -88,25 +70,6 @@ __device__ update( float *layer, int layer_size, int k, int pos, float energy ) 
     /* 5. Do not add if its absolute value is lower than the threshold */
     if ( energy_k >= THRESHOLD / layer_size || energy_k <= -THRESHOLD / layer_size )
         layer[k] = layer[k] + energy_k;
-}
-
-
-__global__ void calcStorms(Storm* stormPtr, float *layerDevice, int layer_size) {
-    const threadId = blockIdx.x*blockDim.x + threadIdx.x;
-
-    if (threadId > stormPtr.size)
-        return;
-
-    /* Get impact energy (expressed in thousandths) */
-    float energy = (float)stormPtr.posval[threadId*2+1] * 1000;
-    /* Get impact position */
-    int position = stormPtr.posval[threadId*2];
-
-    /* For each cell in the layer */
-    for( k=0; k<layer_size; k++ ) {
-        /* Update the energy value for the cell */
-        update( layerDevice, layer_size, k, position, energy );
-    }
 }
 
 
@@ -188,6 +151,14 @@ Storm read_storm_file( char *fname ) {
 int main(int argc, char *argv[]) {
     int i,j,k;
 
+    int rank, size;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+	MPI_Status status;
+
     /* 1.1. Read arguments */
     if (argc<3) {
         fprintf(stderr,"Usage: %s <size> <storm_1_file> [ <storm_i_file> ] ... \n", argv[0] );
@@ -211,89 +182,118 @@ int main(int argc, char *argv[]) {
     }
 
     /* 2. Begin time measurement */
-	CHECK_CUDA_CALL( cudaSetDevice(0) );
-	CHECK_CUDA_CALL( cudaDeviceSynchronize() );
+    MPI_Barrier(MPI_COMM_WORLD);
     double ttotal = cp_Wtime();
 
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
 
     /* 3. Allocate memory for the layer and initialize to zero */
     float *layer = (float *)malloc( sizeof(float) * layer_size );
-    float *layer_copy = (float *)malloc( sizeof(float) * layer_size );
-    if ( layer == NULL || layer_copy == NULL ) {
+	float *layer_local = (float *)malloc( sizeof(float) * layer_size );
+    float *layer_copy= (float *)malloc( sizeof(float) * layer_size );
+    float *layer_recv= (float *)malloc( sizeof(float) * layer_size );
+    if ( layer == NULL || layer_copy == NULL || layer_local ==NULL) {
         fprintf(stderr,"Error: Allocating the layer memory\n");
         exit( EXIT_FAILURE );
     }
     for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
+    for( k=0; k<layer_size; k++ ) layer_local[k] = 0.0f;
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
-
-    // allocate memory in gpu
-    Storm *stormsDevice;
-    cudaMalloc((void **)&stormDevice, num_storms * sizeof(Storm));
-    cudaMemCopy(stormDevice, storm, num_storms * sizeof(Storm), cudaMemcpyHostToDevice)
-
-    float *layerDevice;
-    float *layer_copyDevice;
-
-    // init layer
-    cudaMalloc((void **)&layerDevice, sizeof(float) * layer_size );
-    cudaMemCopy(layerDevice, layer, sizeof(float) * layer_size, cudaMemcpyHostToDevice)
-
-    // result
-
+    for( k=0; k<layer_size; k++ ) layer_recv[k] = 0.0f;
+    
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
-        // Parallel by GPU
-        calcStorms<<<32, storms[i].size/32>>> (stormDevice[i],layerDevice,layer_size);
+    	MPI_Barrier(MPI_COMM_WORLD);
 
-        cudaMemCopy(layer, layerDevice, sizeof(float) * layer_size, cudaMemcpyDeviceToHost);
+		int residualLastRank = storms[i].size % size;
+		int particlesPerRank = (storms[i].size-residualLastRank) / size;
 
-        ///* 4.1. Add impacts energies to layer cells */
-        ///* For each particle */
-        //for( j=0; j<storms[i].size; j++ ) {
-        //    /* Get impact energy (expressed in thousandths) */
-        //    float energy = (float)storms[i].posval[j*2+1] * 1000;
-        //    /* Get impact position */
-        //    int position = storms[i].posval[j*2];
+		int start = particlesPerRank * rank;
+		int end = particlesPerRank * (rank+1);
 
-        //    /* For each cell in the layer */
-        //    for( k=0; k<layer_size; k++ ) {
-        //        /* Update the energy value for the cell */
-        //        update( layer, layer_size, k, position, energy );
-        //    }
+		//printf("rank %d process start %d end %d totoal %d residuals %d\n",
+		//rank,start, end, storms[i].size, residualLastRank);
+
+        if (particlesPerRank > 0) {
+            /* 4.1. Add impacts energies to layer cells */
+            /* For each particle */
+            for( j = start; j < end; j++ ) {
+                /* Get impact energy (expressed in thousandths) */
+                float energy = (float)storms[i].posval[j*2+1] * 1000;
+                /* Get impact position */
+                int position = storms[i].posval[j*2];
+
+                /* For each cell in the layer */
+                for( k=0; k<layer_size; k++ ) {
+                    /* Update the energy value for the cell */
+                    update(layer_local, layer_size, k, position, energy );
+                }
+            }
+        }
+
+		if (rank == 0 && residualLastRank != 0) {
+		    start = particlesPerRank * size;
+		    end  = storms[i].size;
+		    //printf("rank %d process start %d end %d totoal %d process residuals %d\n",
+		    //rank,start, end, storms[i].size, residualLastRank);
+
+            for( j = start; j < end; j++ ) {
+                /* Get impact energy (expressed in thousandths) */
+                float energy = (float)storms[i].posval[j*2+1] * 1000;
+                /* Get impact position */
+                int position = storms[i].posval[j*2];
+
+                /* For each cell in the layer */
+                for( k=0; k<layer_size; k++ ) {
+                    /* Update the energy value for the cell */
+                    update(layer_local, layer_size, k, position, energy );
+                }
+            }
+        }
+
+        // Scheme1 all reduce layer at once
+		MPI_Allreduce(layer_local, layer_recv, layer_size, MPI_FLOAT, MPI_SUM,  MPI_COMM_WORLD);
+
+        // Scheme2 reduce at elementwise
+        //for( k=0; k<layer_size; k++ ) {
+		//    MPI_Reduce(&layer_local[k], &layer_recv[k], 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
         //}
 
-        // Process by CPU
+        // only rank 0 process following procedures
+		if (rank == 0) {
+            for( k=0; k<layer_size; k++ ) 
+                layer[k] = layer_recv[k];
 
-        /* 4.2. Energy relaxation between storms */
-        /* 4.2.1. Copy values to the ancillary array */
-        for( k=0; k<layer_size; k++ ) 
-            layer_copy[k] = layer[k];
-        /* 4.2.2. Update layer using the ancillary values.
-                  Skip updating the first and last positions */
-        for( k=1; k<layer_size-1; k++ )
-            layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
+            /* 4.2. Energy relaxation between storms */
+            /* 4.2.1. Copy values to the ancillary array */
+            for( k=0; k<layer_size; k++ ) 
+                layer_copy[k] = layer[k];
 
-        /* 4.3. Locate the maximum value in the layer, and its position */
-        for( k=1; k<layer_size-1; k++ ) {
-            /* Check it only if it is a local maximum */
-            if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
-                if ( layer[k] > maximum[i] ) {
-                    maximum[i] = layer[k];
-                    positions[i] = k;
+            /* 4.2.2. Update layer using the ancillary values.
+                      Skip updating the first and last positions */
+            for( k=1; k<layer_size-1; k++ )
+                layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
+
+            /* 4.3. Locate the maximum value in the layer, and its position */
+            for( k=1; k<layer_size-1; k++ ) {
+                /* Check it only if it is a local maximum */
+                if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
+                    if ( layer[k] > maximum[i] ) {
+                        maximum[i] = layer[k];
+                        positions[i] = k;
+                    }
                 }
             }
         }
     }
 
-    cudaFree(layerDevice);
-    cudaFree(stormDevice);
-
     /* END: Do NOT optimize/parallelize the code below this point */
 
     /* 5. End time measurement */
-	CHECK_CUDA_CALL( cudaDeviceSynchronize() );
+    MPI_Barrier(MPI_COMM_WORLD);
     ttotal = cp_Wtime() - ttotal;
+
+    if ( rank == 0 ) {
 
     /* 6. DEBUG: Plot the result (only for layers up to 35 points) */
     #ifdef DEBUG
@@ -310,6 +310,8 @@ int main(int argc, char *argv[]) {
         printf(" %d %f", positions[i], maximum[i] );
     printf("\n");
 
+    }
+
     /* 8. Free resources */    
     for( i=0; i<argc-2; i++ )
         free( storms[i].posval );
@@ -317,4 +319,6 @@ int main(int argc, char *argv[]) {
     /* 9. Program ended successfully */
     return 0;
 }
+
+
 
