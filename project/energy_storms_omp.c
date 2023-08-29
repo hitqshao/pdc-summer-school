@@ -199,11 +199,7 @@ int main(int argc, char *argv[]) {
             /* Get impact position */
             int position = storms[i].posval[j*2];
 
-            /* For each cell in the layer */
-            //for( k=0; k<layer_size; k++ ) {
-            //    update( layer, layer_size, k, position, energy );
-            //}
-	    #pragma omp parallel for shared(layer, layer_size, position, energy)
+	        #pragma omp parallel for shared(layer, layer_size, position, energy)
             for( k=0; k<layer_size; k++ ) {
                 /* Update the energy value for the cell */
                 update( layer, layer_size, k, position, energy );
@@ -212,18 +208,18 @@ int main(int argc, char *argv[]) {
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
-	#pragma omp parallel for 
+	    #pragma omp parallel for 
         for( k=0; k<layer_size; k++ ) 
             layer_copy[k] = layer[k];
 
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
-	#pragma omp parallel for 
+	    #pragma omp parallel for 
         for( k=1; k<layer_size-1; k++ )
             layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
 
         /* 4.3. Locate the maximum value in the layer, and its position */
-	#pragma omp parallel for 
+	    #pragma omp parallel for 
         for( k=1; k<layer_size-1; k++ ) {
             /* Check it only if it is a local maximum */
             if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
