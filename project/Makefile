@@ -19,9 +19,9 @@
 
 # Compilers
 # Make sure you use the correct wrappers
-#CC=gcc
+CC=gcc
 #Correct CC and MPICC for Dardel
-CC=cc
+#CC=cc
 MPICC=cc
 CUDACC=nvcc
 HIPCC=hipcc
@@ -66,6 +66,15 @@ energy_storms_mpi: energy_storms_mpi.c
 
 energy_storms_cuda: energy_storms_cuda.cu
 	$(CUDACC) $(DEBUG) $(FLAGS) $< $(LIBS) -o $@
+
+energy_storms_omp_opt: energy_storms_omp_opt.c
+	$(CC) $(DEBUG) $(OMPFLAG) $< $(LIBS) -o $@
+
+energy_storms_mpi_opt: energy_storms_mpi_opt.c
+	$(MPICC) $(DEBUG) $< $(LIBS) -o $@
+
+energy_storms_cuda_opt: energy_storms_cuda_opt.cu
+	$(CUDACC) $(DEBUG) $< $(LIBS) -o $@
 
 energy_storms_hip: energy_storms_hip.hip
 	$(HIPCC) $(DEBUG) $(FLAGS) $< $(LIBS) -o $@
