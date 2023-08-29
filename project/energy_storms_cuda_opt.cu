@@ -1,4 +1,3 @@
-%%writefile energy_storms_cuda_opt.cu
 /*
  * Simplified simulation of high-energy particle storms
  *
@@ -43,7 +42,7 @@
 	}
 
 
-/* Use fopen function in local tests. The Tablon online judge software 
+/* Use fopen function in local tests. The Tablon online judge software
    substitutes it by a different function to run in its sandbox */
 #ifdef CP_TABLON
 #include "cputilstablon.h"
@@ -88,20 +87,45 @@ __device__ void update( float *layer, int layer_size, int k, int pos, float ener
 
     /* 5. Do not add if its absolute value is lower than the threshold */
     if ( energy_k >= THRESHOLD / layer_size || energy_k <= -THRESHOLD / layer_size )
-        layer[k] = layer[k] + energy_k;
+        //layer[k] = layer[k] + energy_k;
+        atomicAdd(&layer[k], energy_k);
 }
 
 
-__global__ void calcStorms(Storm* stormPtr, float *layerDevice, int layer_size) {
-    const int threadId = blockIdx.x*blockDim.x + threadIdx.x;
+void update_cpu( float *layer, int layer_size, int k, int pos, float energy ) {
+    /* 1. Compute the absolute value of the distance between the
+        impact position and the k-th position of the layer */
+    int distance = pos - k;
+    if ( distance < 0 ) distance = - distance;
 
-    if (threadId >= stormPtr->size)
+    /* 2. Impact cell has a distance value of 1 */
+    distance = distance + 1;
+
+    /* 3. Square root of the distance */
+    /* NOTE: Real world atenuation typically depends on the square of the distance.
+       We use here a tailored equation that affects a much wider range of cells */
+    float atenuacion = sqrtf( (float)distance );
+
+    /* 4. Compute attenuated energy */
+    float energy_k = energy / layer_size / atenuacion;
+
+    /* 5. Do not add if its absolute value is lower than the threshold */
+    if ( energy_k >= THRESHOLD / layer_size || energy_k <= -THRESHOLD / layer_size )
+        layer[k] = layer[k] + energy_k;
+}
+
+__global__ void calcStorms(int* posval,int stormSize, float *layerDevice, int layer_size) {
+    const int threadId = blockIdx.x*blockDim.x + threadIdx.x;
+    //printf("blockIdx.x %d blockDim.x %d threadIdx.x %d threadId %d\n",
+    //blockIdx.x,blockDim.x,threadIdx.x,threadId);
+
+    if (threadId >= stormSize)
         return;
 
     /* Get impact energy (expressed in thousandths) */
-    float energy = (float)stormPtr->posval[threadId*2+1] * 1000;
+    float energy = (float)posval[threadId*2+1] * 1000;
     /* Get impact position */
-    int position = stormPtr->posval[threadId*2];
+    int position = posval[threadId*2];
 
     /* For each cell in the layer */
     for(int k=0; k<layer_size; k++ ) {
@@ -109,7 +133,6 @@ __global__ void calcStorms(Storm* stormPtr, float *layerDevice, int layer_size) 
         update( layerDevice, layer_size, k, position, energy );
     }
 }
-
 
 /* ANCILLARY FUNCTIONS: These are not called from the code section which is measured, leave untouched */
 /* DEBUG function: Prints the layer status */
@@ -122,7 +145,7 @@ void debug_print(int layer_size, float *layer, int *positions, float *maximum, i
             /* Print the energy value of the current cell */
             printf("%10.4f |", layer[k] );
 
-            /* Compute the number of characters. 
+            /* Compute the number of characters.
                This number is normalized, the maximum level is depicted with 60 characters */
             int ticks = (int)( 60 * layer[k] / maximum[num_storms-1] );
 
@@ -136,7 +159,7 @@ void debug_print(int layer_size, float *layer, int *positions, float *maximum, i
                 printf("o");
 
             /* If the cell is the maximum of any storm, print the storm mark */
-            for (i=0; i<num_storms; i++) 
+            for (i=0; i<num_storms; i++)
                 if ( positions[i] == k ) printf(" M%d", i );
 
             /* Line feed */
@@ -155,7 +178,7 @@ Storm read_storm_file( char *fname ) {
         exit( EXIT_FAILURE );
     }
 
-    Storm storm;    
+    Storm storm;
     int ok = fscanf(fstorm, "%d", &(storm.size) );
     if ( ok != 1 ) {
         fprintf(stderr,"Error: Reading size of storm file %s\n", fname );
@@ -167,10 +190,10 @@ Storm read_storm_file( char *fname ) {
         fprintf(stderr,"Error: Allocating memory for storm file %s, with size %d\n", fname, storm.size );
         exit( EXIT_FAILURE );
     }
-    
+
     int elem;
     for ( elem=0; elem<storm.size; elem++ ) {
-        ok = fscanf(fstorm, "%d %d\n", 
+        ok = fscanf(fstorm, "%d %d\n",
                     &(storm.posval[elem*2]),
                     &(storm.posval[elem*2+1]) );
         if ( ok != 2 ) {
@@ -200,7 +223,7 @@ int main(int argc, char *argv[]) {
     Storm storms[ num_storms ];
 
     /* 1.2. Read storms information */
-    for( i=2; i<argc; i++ ) 
+    for( i=2; i<argc; i++ )
         storms[i-2] = read_storm_file( argv[i] );
 
     /* 1.3. Intialize maximum levels to zero */
@@ -212,8 +235,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* 2. Begin time measurement */
-	CHECK_CUDA_CALL( cudaSetDevice(0) );
-	CHECK_CUDA_CALL( cudaDeviceSynchronize() );
+	  CHECK_CUDA_CALL( cudaSetDevice(0) );
+	  CHECK_CUDA_CALL( cudaDeviceSynchronize() );
     double ttotal = cp_Wtime();
 
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
@@ -221,14 +244,13 @@ int main(int argc, char *argv[]) {
     /* 3. Allocate memory for the layer and initialize to zero */
     float *layer = (float *)malloc( sizeof(float) * layer_size );
     float *layer_copy = (float *)malloc( sizeof(float) * layer_size );
-    if ( layer == NULL || layer_copy == NULL ) {
+
+    if ( layer == NULL || layer_copy == NULL) {
         fprintf(stderr,"Error: Allocating the layer memory\n");
         exit( EXIT_FAILURE );
     }
     for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
-
-
 
     float *layerDevice;
 
@@ -236,40 +258,54 @@ int main(int argc, char *argv[]) {
     cudaMalloc((void **)&layerDevice, sizeof(float) * layer_size );
     cudaMemcpy(layerDevice, layer, sizeof(float) * layer_size, cudaMemcpyHostToDevice);
 
-    // result
+    // get threadNumber
+    int device;
+    int maxThreadsPerBlock;
+
+    cudaGetDevice(&device);
+    cudaDeviceGetAttribute(&maxThreadsPerBlock, cudaDevAttrMaxThreadsPerBlock, device);
+
+    int threadPerBlock = 256;
+
+    int *stormsDevice;
 
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
-        // allocate memory in gpu
-        Storm *stormsDevice;
-        cudaMalloc((void **)&stormsDevice, storms[i].size * sizeof(Storm));
-        cudaMemcpy(stormsDevice, storms, storms[i].size * sizeof(Storm), cudaMemcpyHostToDevice);
+        int copySize = storms[i].size * sizeof(int)*2;
+        // for small data set, we will use cpu
+        if (copySize < threadPerBlock) {
+            /* 4.1. Add impacts energies to layer cells */
+            /* For each particle */
+            for( int j=0; j<storms[i].size; j++ ) {
+                /* Get impact energy (expressed in thousandths) */
+                float energy = (float)storms[i].posval[j*2+1] * 1000;
+                /* Get impact position */
+                int position = storms[i].posval[j*2];
 
-        // Parallel by GPU
-        calcStorms<<<32, storms[i].size/32>>> (stormsDevice,layerDevice, layer_size);
+                /* For each cell in the layer */
+                for( k=0; k<layer_size; k++ ) {
+                    /* Update the energy value for the cell */
+                    update_cpu( layer, layer_size, k, position, energy );
+                }
+            }
+        } else {
+            // allocate memory in gpu
+            cudaMalloc((void **)&stormsDevice, copySize);
+            cudaMemcpy(stormsDevice, storms[i].posval, copySize, cudaMemcpyHostToDevice);
 
-        cudaMemcpy(layer, layerDevice, sizeof(float) * layer_size, cudaMemcpyDeviceToHost);
+            // Parallel by GPU
+            calcStorms<<<storms[i].size/threadPerBlock,threadPerBlock>>> (stormsDevice,storms[i].size,layerDevice,layer_size);
 
-        ///* 4.1. Add impacts energies to layer cells */
-        ///* For each particle */
-        //for( j=0; j<storms[i].size; j++ ) {
-        //    /* Get impact energy (expressed in thousandths) */
-        //    float energy = (float)storms[i].posval[j*2+1] * 1000;
-        //    /* Get impact position */
-        //    int position = storms[i].posval[j*2];
-
-        //    /* For each cell in the layer */
-        //    for( k=0; k<layer_size; k++ ) {
-        //        /* Update the energy value for the cell */
-        //        update( layer, layer_size, k, position, energy );
-        //    }
-        //}
+            // Copy memory back
+            cudaMemcpy(layer, layerDevice, sizeof(float) * layer_size, cudaMemcpyDeviceToHost);
+            cudaFree(stormsDevice);
+        }
 
         // Process by CPU
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
-        for( k=0; k<layer_size; k++ ) 
+        for( k=0; k<layer_size; k++ )
             layer_copy[k] = layer[k];
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
@@ -287,6 +323,8 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+
+    cudaFree(layerDevice);
 
     /* END: Do NOT optimize/parallelize the code below this point */
 
@@ -309,10 +347,11 @@ int main(int argc, char *argv[]) {
         printf(" %d %f", positions[i], maximum[i] );
     printf("\n");
 
-    /* 8. Free resources */    
+    /* 8. Free resources */
     for( i=0; i<argc-2; i++ )
         free( storms[i].posval );
 
     /* 9. Program ended successfully */
     return 0;
 }
+
