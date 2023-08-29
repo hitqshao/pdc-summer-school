@@ -116,8 +116,6 @@ void update_cpu( float *layer, int layer_size, int k, int pos, float energy ) {
 
 __global__ void calcStorms(int* posval,int stormSize, float *layerDevice, int layer_size) {
     const int threadId = blockIdx.x*blockDim.x + threadIdx.x;
-    //printf("blockIdx.x %d blockDim.x %d threadIdx.x %d threadId %d\n",
-    //blockIdx.x,blockDim.x,threadIdx.x,threadId);
 
     if (threadId >= stormSize)
         return;

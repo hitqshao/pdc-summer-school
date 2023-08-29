@@ -177,7 +177,7 @@ int main(int argc, char *argv[]) {
     
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
-
+        printf("size %d\n", storms[i].size);
         /* 4.1. Add impacts energies to layer cells */
         /* For each particle */
         for( j=0; j<storms[i].size; j++ ) {
