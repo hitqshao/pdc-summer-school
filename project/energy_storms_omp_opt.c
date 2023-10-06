@@ -60,7 +60,7 @@ void update( float *layer, int layer_size, int k, int pos, float energy ) {
     distance = distance + 1;
 
     /* 3. Square root of the distance */
-    /* NOTE: Real world atenuation typically depends on the square of the distance.
+    /* NOTE: Real world attenuation typically depends on the square of the distance.
        We use here a tailored equation that affects a much wider range of cells */
     float atenuacion = sqrtf( (float)distance );
 
@@ -150,7 +150,7 @@ Storm read_storm_file( char *fname ) {
  */
 int main(int argc, char *argv[]) {
     int i,j,k;
-
+    
     /* 1.1. Read arguments */
     if (argc<3) {
         fprintf(stderr,"Usage: %s <size> <storm_1_file> [ <storm_i_file> ] ... \n", argv[0] );
@@ -165,7 +165,7 @@ int main(int argc, char *argv[]) {
     for( i=2; i<argc; i++ ) 
         storms[i-2] = read_storm_file( argv[i] );
 
-    /* 1.3. Intialize maximum levels to zero */
+    /* 1.3. Initialize maximum levels to zero */
     float maximum[ num_storms ];
     int positions[ num_storms ];
     for (i=0; i<num_storms; i++) {
@@ -187,7 +187,8 @@ int main(int argc, char *argv[]) {
     }
     for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
-
+    
+	int n_threads = 16;
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
 
@@ -200,7 +201,11 @@ int main(int argc, char *argv[]) {
             int position = storms[i].posval[j*2];
 
             /* For each cell in the layer */
-	        #pragma omp parallel for shared(layer, layer_size, position, energy)
+	    // Set the number of threads
+	    omp_set_num_threads(n_threads); 
+			
+	    // #pragma omp parallel num_threads(10)
+	    #pragma omp parallel for shared(layer, layer_size, position, energy) private(k)
             for( k=0; k<layer_size; k++ ) {
                 /* Update the energy value for the cell */
                 update( layer, layer_size, k, position, energy );
@@ -209,18 +214,22 @@ int main(int argc, char *argv[]) {
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
-	    #pragma omp parallel for 
+		
+		// omp_set_num_threads(n_threads); 
+	    // #pragma omp parallel for 
         for( k=0; k<layer_size; k++ ) 
             layer_copy[k] = layer[k];
 
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
-	    #pragma omp parallel for 
+	    // omp_set_num_threads(n_threads); 
+	    // #pragma omp parallel for 
         for( k=1; k<layer_size-1; k++ )
             layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
 
         /* 4.3. Locate the maximum value in the layer, and its position */
-	    #pragma omp parallel for 
+		// omp_set_num_threads(n_threads);
+	    // #pragma omp parallel for 
         for( k=1; k<layer_size-1; k++ ) {
             /* Check it only if it is a local maximum */
             if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
